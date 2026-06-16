@@ -1,14 +1,21 @@
 // Project JSON export / import logic.
 
+import { migrateProject } from "./migrate";
+
 export function exportProject(project, cueSheet) {
-  const data = JSON.stringify({ project, cueSheet }, null, 2);
+  const exportedProject = {
+    ...project,
+    schemaVersion: project.schemaVersion || "1.0",
+    projectId: project.projectId || crypto.randomUUID(),
+    lastModified: new Date().toISOString(),
+  };
+  const data = JSON.stringify({ project: exportedProject, cueSheet }, null, 2);
   const blob = new Blob([data], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
   a.download = `${(project.title || "untitled").replace(/\s+/g, "_")}_directorcam.json`;
   a.click();
-  // Revoke after the click has been processed.
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
@@ -29,9 +36,8 @@ export function importProjectFile(file) {
         if (!Array.isArray(data.cueSheet)) {
           throw new Error("Missing \"cueSheet\" key");
         }
-        // Fill in any absent optional fields with safe defaults so a
-        // hand-edited file doesn't crash the UI.
-        const project = {
+        // Build a sanitized base project, then run migration to ensure schema fields.
+        const baseProject = {
           id: data.project.id || "proj_imported",
           title: data.project.title || "Imported project",
           script: data.project.script || "",
@@ -39,7 +45,13 @@ export function importProjectFile(file) {
           createdAt: data.project.createdAt || new Date().toISOString(),
           updatedAt: data.project.updatedAt || new Date().toISOString(),
           slideDeckUrl: data.project.slideDeckUrl || "",
+          // Pass through schema fields so migrateProject can detect a v1.0
+          // file and preserve its projectId rather than generating a new one.
+          schemaVersion: data.project.schemaVersion,
+          projectId: data.project.projectId,
+          lastModified: data.project.lastModified,
         };
+        const project = migrateProject(baseProject);
         const cueSheet = data.cueSheet.map((c, i) => ({
           id: c.id || `cue_${String(i + 1).padStart(3, "0")}`,
           label: c.label || "Untitled cue",

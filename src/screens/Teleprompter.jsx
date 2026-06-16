@@ -3,7 +3,7 @@ import { useApp } from "../context/AppContext";
 import { wordIndexAt } from "../engine/teleprompterEngine";
 import CameraPreview from "../components/CameraPreview";
 
-// Screen 1 — Teleprompter. Black background, scrolling script, minimal
+// Screen 1 -- Teleprompter. Black background, scrolling script, minimal
 // 48px control strip at the bottom (sits above the tab bar).
 export default function Teleprompter() {
   const {
@@ -16,7 +16,10 @@ export default function Teleprompter() {
     setSlow,
     setWpm,
     isRecording,
-    toggleRecording,
+    startRecording,
+    stopRecording,
+    stop,
+    setSharedAudioContext,
     permission,
     fontSize,
     setFontSize,
@@ -24,10 +27,71 @@ export default function Teleprompter() {
     setPreviewVisible,
   } = useApp();
 
-  const areaRef = useRef(null); // visible text viewport
-  const contentRef = useRef(null); // translated content
+  const areaRef = useRef(null);
+  const contentRef = useRef(null);
   const wordEls = useRef([]);
   const [showSpeed, setShowSpeed] = useState(false);
+
+  // ---- Take state -----------------------------------------------------------
+  const [countdownPhase, setCountdownPhase] = useState(null); // null | 3 | 2 | 1
+  const [takeStarted, setTakeStarted] = useState(false);
+  const [showResetDialog, setShowResetDialog] = useState(false);
+  const audioCtxRef = useRef(null);
+
+  // ---- Countdown logic ------------------------------------------------------
+  const handleStartTake = () => {
+    // Create the single AudioContext on this user gesture tap -- it stays
+    // unlocked for the rest of the session, covering both countdown beeps
+    // and cue engine sound effects.
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    const ac = new AudioContextClass();
+    audioCtxRef.current = ac;
+    setSharedAudioContext(ac);
+    setCountdownPhase(3);
+  };
+
+  const handleCancelCountdown = () => {
+    setCountdownPhase(null);
+  };
+
+  useEffect(() => {
+    if (countdownPhase === null) return;
+
+    // Play a short beep for each count. Higher pitch on "1" to signal launch.
+    const ac = audioCtxRef.current;
+    if (ac) {
+      const osc = ac.createOscillator();
+      const gain = ac.createGain();
+      osc.frequency.value = countdownPhase === 1 ? 1046 : 880;
+      osc.connect(gain);
+      gain.connect(ac.destination);
+      gain.gain.setValueAtTime(0.35, ac.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.12);
+      osc.start(ac.currentTime);
+      osc.stop(ac.currentTime + 0.15);
+    }
+
+    const timer = setTimeout(() => {
+      if (countdownPhase === 1) {
+        setCountdownPhase(null);
+        setTakeStarted(true);
+        startRecording().catch(() => {});
+        togglePlay(); // stopped -> playing
+      } else {
+        setCountdownPhase(countdownPhase - 1);
+      }
+    }, 1000);
+
+    return () => clearTimeout(timer);
+  }, [countdownPhase, startRecording, togglePlay]);
+
+  // ---- Reset take actions ---------------------------------------------------
+  const executeReset = (discard) => {
+    stopRecording(discard);
+    stop(); // position -> 0, re-arms all cues, preserves camera
+    setTakeStarted(false);
+    setShowResetDialog(false);
+  };
 
   const currentIndex = useMemo(
     () => wordIndexAt(words, scrollPosition),
@@ -35,10 +99,6 @@ export default function Teleprompter() {
   );
 
   // ---- Scroll positioning ---------------------------------------------------
-  // The current word is pinned near a fixed "reading line" at 35% of the text
-  // area height. We interpolate between the current and next word's offsetTop
-  // using the fractional progress through the word, so motion is per-pixel
-  // smooth even though scrollPosition is character-based.
   useLayoutEffect(() => {
     const area = areaRef.current;
     const content = contentRef.current;
@@ -54,13 +114,12 @@ export default function Teleprompter() {
     );
     const y = cur.offsetTop + (next ? (next.offsetTop - cur.offsetTop) * progress : 0);
     const readingLine = area.clientHeight * 0.35;
-    content.style.transform = `translateY(${readingLine - y}px)`;
+    content.style.transform = "translateY(" + (readingLine - y) + "px)";
   }, [scrollPosition, currentIndex, words, fontSize]);
 
   // ---- Desktop keyboard controls -------------------------------------------
   useEffect(() => {
     const onKeyDown = (e) => {
-      // Don't hijack typing in form fields (e.g. settings panel open on top).
       if (/INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
       switch (e.key) {
         case " ":
@@ -77,7 +136,7 @@ export default function Teleprompter() {
           break;
         case "ArrowLeft":
           e.preventDefault();
-          jumpByWords(-10); // re-arms passed cues via context
+          jumpByWords(-10);
           break;
         case "ArrowRight":
           e.preventDefault();
@@ -101,8 +160,6 @@ export default function Teleprompter() {
   }, [togglePlay, setWpm, jumpByWords, setSlow, project.wpm]);
 
   // ---- Mobile touch controls -------------------------------------------------
-  // single tap: play/pause · two-finger tap: jump back 10 words
-  // swipe up/down: WPM ±5 · two-finger hold: slow mode · pinch: font size
   const gesture = useRef(null);
   const HOLD_MS = 350;
 
@@ -154,20 +211,18 @@ export default function Teleprompter() {
 
   const onTouchEnd = (e) => {
     const g = gesture.current;
-    if (!g || e.touches.length > 0) return; // wait for all fingers to lift
+    if (!g || e.touches.length > 0) return;
     gesture.current = null;
     if (g.kind === "double") {
       clearTimeout(g.holdTimer);
       if (g.holding) {
-        setSlow(false); // end of two-finger hold
+        setSlow(false);
       } else if (!g.pinched && Date.now() - g.t0 < HOLD_MS) {
-        jumpByWords(-10); // two-finger tap
+        jumpByWords(-10);
       }
       return;
     }
-    // single touch
     if (Math.abs(g.moved) > 50) {
-      // swipe up = faster, swipe down = slower
       setWpm(project.wpm + (g.moved < 0 ? 5 : -5));
     } else if (Date.now() - g.t0 < 400) {
       togglePlay();
@@ -196,7 +251,7 @@ export default function Teleprompter() {
         <div
           ref={contentRef}
           className="mx-auto select-none px-6 text-white will-change-transform"
-          style={{ maxWidth: 680, fontSize: `${fontSize}px`, lineHeight: 1.6 }}
+          style={{ maxWidth: 680, fontSize: fontSize + "px", lineHeight: 1.6 }}
         >
           {words.length === 0 ? (
             <p className="pt-24 text-center text-base text-secondary">
@@ -240,52 +295,42 @@ export default function Teleprompter() {
         </div>
       </div>
 
-      {/* Control strip — 48px, semi-transparent, above the tab bar */}
+      {/* Control strip -- 48px, semi-transparent, above the tab bar */}
       <div className="relative z-40 flex h-12 shrink-0 items-center justify-between bg-black/80 px-4">
-        {/* Speed indicator (tap for slider) */}
-        <button
-          onClick={() => setShowSpeed((s) => !s)}
-          className="min-h-[44px] min-w-[64px] text-left font-mono text-sm text-secondary"
-        >
-          <span className="text-white">{project.wpm}</span> wpm
-          {playbackState === "slow" && <span className="ml-1 text-accent">slow</span>}
-        </button>
-
-        {/* Play / pause */}
-        <button
-          onClick={togglePlay}
-          aria-label={playing ? "Pause" : "Play"}
-          className="flex h-11 w-16 items-center justify-center rounded-full bg-accent text-black"
-        >
-          {playing ? (
-            <svg viewBox="0 0 24 24" className="h-6 w-6" fill="currentColor">
-              <rect x="6" y="5" width="4" height="14" rx="1" />
-              <rect x="14" y="5" width="4" height="14" rx="1" />
-            </svg>
-          ) : (
-            <svg viewBox="0 0 24 24" className="h-6 w-6" fill="currentColor">
-              <path d="M8 5l11 7-11 7V5z" />
-            </svg>
-          )}
-        </button>
-
-        {/* Record */}
-        <button
-          onClick={toggleRecording}
-          aria-label={isRecording ? "Stop recording" : "Start recording"}
-          className="relative flex h-11 w-11 items-center justify-center"
-        >
+        {/* Speed indicator / recording status */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowSpeed((s) => !s)}
+            className="min-h-[44px] min-w-[64px] text-left font-mono text-sm text-secondary"
+          >
+            <span className="text-white">{project.wpm}</span> wpm
+            {playbackState === "slow" && <span className="ml-1 text-accent">slow</span>}
+          </button>
           {isRecording && (
-            <span className="absolute inset-0 animate-ping rounded-full bg-red-600/40" />
+            <span className="flex items-center gap-1 text-xs font-semibold text-red-400">
+              <span className="h-2 w-2 animate-pulse rounded-full bg-red-500" />
+              REC
+            </span>
           )}
-          <span
-            className={`block rounded-full border-2 ${
-              isRecording
-                ? "h-7 w-7 border-red-500 bg-red-600"
-                : "h-7 w-7 border-red-500/70 bg-red-600/30"
-            }`}
-          />
-        </button>
+        </div>
+
+        {/* Primary action button */}
+        {takeStarted ? (
+          <button
+            onClick={() => setShowResetDialog(true)}
+            className="min-h-[44px] rounded-lg border border-neutral-600 px-5 text-sm font-semibold text-white"
+          >
+            Reset Take
+          </button>
+        ) : (
+          <button
+            onClick={handleStartTake}
+            disabled={countdownPhase !== null}
+            className="min-h-[44px] rounded-lg bg-accent px-6 text-sm font-bold text-black disabled:opacity-50"
+          >
+            Start Take
+          </button>
+        )}
       </div>
 
       {/* Speed slider popover */}
@@ -305,6 +350,53 @@ export default function Teleprompter() {
             onChange={(e) => setWpm(Number(e.target.value))}
             className="h-11 w-full accent-amber-500"
           />
+        </div>
+      )}
+
+      {/* Countdown overlay */}
+      {countdownPhase !== null && (
+        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-black/90">
+          <div className="font-mono text-9xl font-bold text-accent" aria-live="assertive">
+            {countdownPhase}
+          </div>
+          <button
+            onClick={handleCancelCountdown}
+            className="mt-10 min-h-[48px] rounded-lg border border-neutral-500 px-8 text-base font-semibold text-white"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {/* Reset Take confirmation dialog */}
+      {showResetDialog && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/75 p-6">
+          <div className="w-full max-w-sm rounded-xl border border-neutral-700 bg-surface p-5">
+            <h2 className="mb-1 text-base font-semibold text-white">Reset Take</h2>
+            <p className="mb-5 text-sm text-secondary">
+              What would you like to do with the current recording?
+            </p>
+            <div className="flex flex-col gap-3">
+              <button
+                onClick={() => executeReset(false)}
+                className="min-h-[48px] rounded-lg bg-accent font-semibold text-black"
+              >
+                Save and Reset
+              </button>
+              <button
+                onClick={() => executeReset(true)}
+                className="min-h-[48px] rounded-lg border border-red-700 font-semibold text-red-400"
+              >
+                Reset Without Saving
+              </button>
+              <button
+                onClick={() => setShowResetDialog(false)}
+                className="min-h-[44px] rounded-lg border border-neutral-600 text-sm text-white"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

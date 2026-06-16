@@ -40,32 +40,42 @@ export function AppProvider({ children }) {
 
   // ---- Teleprompter engine state ------------------------------------------
   const [scrollPosition, setScrollPosition] = useState(0);
-  const [playbackState, setPlaybackState] = useState("stopped"); // stopped | playing | paused | slow
+  const [playbackState, setPlaybackState] = useState("stopped");
 
   // ---- Recording state -----------------------------------------------------
   const [isRecording, setIsRecording] = useState(false);
   const mediaRecorderRef = useRef(null);
   const recordedChunksRef = useRef([]);
+  // Set true before calling recorder.stop() when discarding -- prevents
+  // ondataavailable and onstop from saving or downloading the file.
+  const isDiscarding = useRef(false);
+
+  // ---- Shared AudioContext -------------------------------------------------
+  // Created on the "Start Take" user gesture tap, reused for countdown beeps
+  // and all cue engine sound effects to satisfy mobile autoplay restrictions.
+  const sharedAudioContextRef = useRef(null);
+
+  const setSharedAudioContext = useCallback((ac) => {
+    sharedAudioContextRef.current = ac;
+  }, []);
 
   // ---- Camera state --------------------------------------------------------
   const [activeStream, setActiveStream] = useState(null);
   const [facingMode, setFacingMode] = useState("user");
   const streamRef = useRef(null);
-  const deviceIndexRef = useRef(0); // desktop camera cycling position
+  const deviceIndexRef = useRef(0);
 
   // ---- Cue engine state ----------------------------------------------------
   const [firedCueIds, setFiredCueIds] = useState(() => new Set());
-  const audioMapRef = useRef(new Map()); // cueId -> HTMLAudioElement
+  const audioMapRef = useRef(new Map());
 
-  // ---- Overlays / countdown -----------------------------------------------
+  // ---- Overlays ------------------------------------------------------------
   const [activeOverlays, setActiveOverlays] = useState([]);
-  // pauseInfo: null, or { countdown: number|null } when a pause_recording cue
-  // is holding playback. countdown null = manual resume.
   const [pauseInfo, setPauseInfo] = useState(null);
 
-  // ---- UI state shared across screens ---------------------------------------
+  // ---- UI state shared across screens --------------------------------------
   const [permission, setPermission] = useState(
-    () => localStorage.getItem(PERMISSIONS_KEY) || "unset" // unset | granted | skipped
+    () => localStorage.getItem(PERMISSIONS_KEY) || "unset"
   );
   const [fontSize, setFontSizeState] = useState(() => {
     const n = Number(localStorage.getItem(FONT_SIZE_KEY));
@@ -93,7 +103,6 @@ export function AppProvider({ children }) {
   const isRecordingRef = useRef(isRecording);
   isRecordingRef.current = isRecording;
 
-  // Memoized word index, shared by all screens.
   const words = useMemo(() => getWords(project.script), [project.script]);
 
   // ---- Persistence ----------------------------------------------------------
@@ -161,6 +170,9 @@ export function AppProvider({ children }) {
         createdAt: now,
         updatedAt: now,
         slideDeckUrl: "",
+        schemaVersion: "1.0",
+        projectId: crypto.randomUUID(),
+        lastModified: now,
       },
       cueSheet: [],
     });
@@ -213,15 +225,9 @@ export function AppProvider({ children }) {
     }
   }, []);
 
-  // Acquire a camera stream. On mobile, `facing` maps to the facingMode
-  // constraint. On desktop, facingMode is usually ignored by the browser, so
-  // a camera_switch cue instead cycles through enumerateDevices() video
-  // inputs (per spec).
   const startCamera = useCallback(
     async (facing = facingRef.current, cycleDevice = false) => {
       try {
-        // Releasing the old camera first matters on Android, where front and
-        // rear cameras usually cannot be open simultaneously.
         if (streamRef.current) {
           streamRef.current.getTracks().forEach((t) => t.stop());
         }
@@ -263,9 +269,6 @@ export function AppProvider({ children }) {
   const switchCamera = useCallback(
     (facing) => {
       if (permission === "skipped") return;
-      // Known limitation (accepted by spec): if a recording is in progress,
-      // MediaRecorder stays bound to the old stream, so the file will not
-      // contain the new camera's frames. The on-screen preview does update.
       startCamera(facing, true).catch(() => {});
     },
     [permission, startCamera]
@@ -280,7 +283,6 @@ export function AppProvider({ children }) {
     await startCamera("user");
   }, [startCamera]);
 
-  // Re-open the permission prompt (used by the record button in skipped mode).
   const resetPermissions = useCallback(() => {
     setPermission("unset");
     localStorage.removeItem(PERMISSIONS_KEY);
@@ -293,15 +295,21 @@ export function AppProvider({ children }) {
       stream = await startCamera(facingRef.current);
     }
     recordedChunksRef.current = [];
-    // Prefer VP9 per spec, fall back for browsers without it.
+    isDiscarding.current = false;
     const mime = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"].find(
       (m) => window.MediaRecorder && MediaRecorder.isTypeSupported(m)
     );
     const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
     recorder.ondataavailable = (e) => {
+      if (isDiscarding.current) return;
       if (e.data && e.data.size > 0) recordedChunksRef.current.push(e.data);
     };
     recorder.onstop = () => {
+      if (isDiscarding.current) {
+        isDiscarding.current = false;
+        recordedChunksRef.current = [];
+        return;
+      }
       const blob = new Blob(recordedChunksRef.current, { type: "video/webm" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -309,29 +317,30 @@ export function AppProvider({ children }) {
       a.download = `directorcam_${Date.now()}.webm`;
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
+      recordedChunksRef.current = [];
     };
-    recorder.start(1000); // collect in 1-second chunks
+    recorder.start(1000);
     mediaRecorderRef.current = recorder;
     setIsRecording(true);
     toast("Recording started", "success");
   }, [startCamera, toast]);
 
-  const stopRecording = useCallback(() => {
+  // discard=true skips the file download. discard=false (default) saves.
+  const stopRecording = useCallback((discard = false) => {
+    isDiscarding.current = discard;
     const recorder = mediaRecorderRef.current;
     if (recorder && recorder.state !== "inactive") {
       recorder.stop();
     }
     mediaRecorderRef.current = null;
     setIsRecording(false);
-    toast("Recording saved");
+    if (!discard) toast("Recording saved");
   }, [toast]);
 
   const toggleRecording = useCallback(() => {
     if (isRecordingRef.current) {
-      stopRecording();
+      stopRecording(false);
     } else if (permission === "skipped") {
-      // Script-only mode: tapping record re-opens the permission prompt so
-      // the user can opt back in.
       resetPermissions();
     } else {
       startRecording().catch(() => {});
@@ -339,8 +348,6 @@ export function AppProvider({ children }) {
   }, [permission, startRecording, stopRecording, resetPermissions]);
 
   // ---- Playback control ---------------------------------------------------------
-  // Re-arm rule: whenever the position moves backward, clear firedCueIds for
-  // any auto cue whose scriptOffset is greater than the new position.
   const rearmAfter = useCallback((newPos) => {
     setFiredCueIds((prev) => {
       const next = new Set();
@@ -354,9 +361,6 @@ export function AppProvider({ children }) {
     });
   }, []);
 
-  // Move to an absolute character offset (production-view word click,
-  // jump-back/forward). Re-arms cues past the new position; if stopped,
-  // becomes paused (ready to resume from that point).
   const seekTo = useCallback(
     (offset) => {
       const clamped = Math.min(scriptLenRef.current, Math.max(0, offset));
@@ -415,7 +419,6 @@ export function AppProvider({ children }) {
       setScrollPosition((pos) => {
         const next = pos + rate * (deltaMs / 1000);
         if (next >= scriptLenRef.current) {
-          // End of script: hold position and drop to paused on the next tick.
           setTimeout(() => setPlaybackState("paused"), 0);
           return scriptLenRef.current;
         }
@@ -472,9 +475,6 @@ export function AppProvider({ children }) {
     setPauseInfo({ countdown: countdown > 0 ? countdown : null });
   }, []);
 
-  // Drive the pause countdown. Counting lives here (not in the overlay
-  // component) so the resume happens even if the overlay is unmounted by a
-  // tab change.
   useEffect(() => {
     if (!pauseInfo || pauseInfo.countdown === null) return undefined;
     if (pauseInfo.countdown <= 0) {
@@ -496,6 +496,7 @@ export function AppProvider({ children }) {
         pausePlayback,
         stopLoopingSounds,
         audioMap: audioMapRef.current,
+        sharedAudioContext: sharedAudioContextRef.current,
         project: projectRef.current,
         toast,
       });
@@ -503,7 +504,6 @@ export function AppProvider({ children }) {
     [switchCamera, addOverlay, pausePlayback, stopLoopingSounds, toast]
   );
 
-  // Manual fire from the production view: execute immediately and mark fired.
   const fireManualCue = useCallback(
     (cue) => {
       fireCue(cue);
@@ -512,8 +512,6 @@ export function AppProvider({ children }) {
     [fireCue]
   );
 
-  // Auto-cue watcher: on each scrollPosition change during playback, fire any
-  // auto cue whose offset has been passed and which hasn't fired this pass.
   useEffect(() => {
     if (playbackState !== "playing" && playbackState !== "slow") return;
     const toFire = cueSheet.filter(
@@ -531,11 +529,15 @@ export function AppProvider({ children }) {
     toFire.forEach((cue) => fireCue(cue));
   }, [scrollPosition, playbackState, cueSheet, firedCueIds, fireCue]);
 
-  // Cleanup on unload: stop tracks and sounds.
+  // Cleanup on unload: stop tracks, sounds, and AudioContext.
   useEffect(() => {
     return () => {
       stopStream();
       stopAllSounds();
+      if (sharedAudioContextRef.current) {
+        sharedAudioContextRef.current.close().catch(() => {});
+        sharedAudioContextRef.current = null;
+      }
     };
   }, [stopStream, stopAllSounds]);
 
@@ -555,7 +557,11 @@ export function AppProvider({ children }) {
     setWpm,
     // recording
     isRecording,
+    startRecording,
+    stopRecording,
     toggleRecording,
+    // audio context
+    setSharedAudioContext,
     // camera
     activeStream,
     facingMode,

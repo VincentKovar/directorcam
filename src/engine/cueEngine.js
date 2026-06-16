@@ -56,17 +56,17 @@ export function payloadSummary(cue, project) {
   const p = cue.payload || {};
   switch (cue.type) {
     case "camera_switch":
-      return `→ ${p.facing === "environment" ? "rear" : "front"}`;
+      return `-> ${p.facing === "environment" ? "rear" : "front"}`;
     case "video_link":
       return shortenUrl(p.url) || "(no URL)";
     case "static_screen":
-      return `Slide ${p.slideNumber ?? "?"}${project?.slideDeckUrl ? "" : " — no deck URL!"}`;
+      return `Slide ${p.slideNumber ?? "?"}${project?.slideDeckUrl ? "" : " -- no deck URL!"}`;
     case "sound_effect":
       return `${shortenUrl(p.src) || "(no URL)"}${p.loop ? " (loop)" : ""}`;
     case "title_card":
-      return `"${p.text || ""}" · ${p.style === "full" ? "full frame" : "lower third"}`;
+      return `"${p.text || ""}" - ${p.style === "full" ? "full frame" : "lower third"}`;
     case "image_overlay":
-      return `${shortenUrl(p.src) || "(no URL)"} · ${p.position || "corner"}`;
+      return `${shortenUrl(p.src) || "(no URL)"} - ${p.position || "corner"}`;
     case "pause_recording":
       return p.countdown > 0 ? `Resume after ${p.countdown}s` : "Manual resume";
     case "note_flash":
@@ -81,9 +81,9 @@ function shortenUrl(url) {
   try {
     const u = new URL(url);
     const s = u.host.replace(/^www\./, "") + u.pathname + u.search;
-    return s.length > 40 ? s.slice(0, 39) + "…" : s;
+    return s.length > 40 ? s.slice(0, 39) + "..." : s;
   } catch {
-    return url.length > 40 ? url.slice(0, 39) + "…" : url;
+    return url.length > 40 ? url.slice(0, 39) + "..." : url;
   }
 }
 
@@ -95,13 +95,14 @@ export function buildSlideUrl(slideDeckUrl, slideNumber) {
  * Execute a cue.
  *
  * ctx must provide:
- *   switchCamera(facing)          — swap the active camera stream
- *   addOverlay(overlay)           — push an overlay onto activeOverlays
- *   pausePlayback({countdown})    — pause scroll + MediaRecorder, optional auto-resume
- *   stopLoopingSounds()           — pause any Audio instances with loop=true
- *   audioMap                      — Map<cueId, HTMLAudioElement> registry
- *   project                       — current project (for slideDeckUrl)
- *   toast(message, kind)          — user feedback for failures
+ *   switchCamera(facing)          -- swap the active camera stream
+ *   addOverlay(overlay)           -- push an overlay onto activeOverlays
+ *   pausePlayback({countdown})    -- pause scroll + MediaRecorder, optional auto-resume
+ *   stopLoopingSounds()           -- pause any Audio instances with loop=true
+ *   audioMap                      -- Map<cueId, HTMLAudioElement> registry
+ *   sharedAudioContext            -- AudioContext created on first user gesture (may be null)
+ *   project                       -- current project (for slideDeckUrl)
+ *   toast(message, kind)          -- user feedback for failures
  */
 export function fireCue(cue, ctx) {
   const p = cue.payload || {};
@@ -120,9 +121,8 @@ export function fireCue(cue, ctx) {
       }
       if (p.openIn === "pip") {
         openVideoInPip(p.url).catch(() => {
-          // Cross-origin pages (e.g. a YouTube watch URL rather than a raw
-          // media file) cannot be loaded into a <video> element, so PiP will
-          // reject — fall back to a tab per spec.
+          // Cross-origin pages cannot be loaded into a <video> element, so
+          // PiP will reject -- fall back to a tab per spec.
           window.open(p.url, "_blank");
         });
       } else {
@@ -152,8 +152,23 @@ export function fireCue(cue, ctx) {
         ctx.audioMap.delete(cue.id);
       }
       const audio = new Audio(p.src);
-      audio.volume = Math.min(1, Math.max(0, Number(p.volume) ?? 0.8));
       audio.loop = !!p.loop;
+      const volume = Math.min(1, Math.max(0, Number(p.volume) || 0.8));
+
+      // Route through the shared AudioContext when available so that playback
+      // is unblocked on mobile Safari/Chrome -- the context was created on the
+      // "Start Take" user gesture and remains unlocked for the session.
+      const ac = ctx.sharedAudioContext;
+      if (ac && ac.state !== "closed") {
+        const source = ac.createMediaElementSource(audio);
+        const gainNode = ac.createGain();
+        gainNode.gain.value = volume;
+        source.connect(gainNode);
+        gainNode.connect(ac.destination);
+      } else {
+        audio.volume = volume;
+      }
+
       ctx.audioMap.set(cue.id, audio);
       audio.addEventListener("ended", () => {
         if (ctx.audioMap.get(cue.id) === audio) ctx.audioMap.delete(cue.id);

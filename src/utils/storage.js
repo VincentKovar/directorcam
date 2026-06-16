@@ -1,5 +1,7 @@
 // localStorage read/write helpers. All project data lives under one key.
 
+import { migrateProject } from "./migrate";
+
 export const STORAGE_KEY = "directorcam_project";
 export const FONT_SIZE_KEY = "directorcam_fontsize";
 export const PERMISSIONS_KEY = "directorcam_permissions";
@@ -94,5 +96,6 @@ export function saveStoredProject(data) {
 }
 
 export function loadOrSeedProject() {
-  return loadStoredProject() || DEMO_PROJECT;
+  const data = loadStoredProject() || DEMO_PROJECT;
+  return { ...data, project: migrateProject(data.project) };
 }
