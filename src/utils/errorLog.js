@@ -13,6 +13,15 @@ export function clearErrorLog() {
   localStorage.removeItem(ERROR_LOG_KEY);
 }
 
+export function logError(message, error) {
+  writeEntry({
+    ts: new Date().toISOString(),
+    type: "error",
+    message: String(message),
+    stack: error?.stack || null,
+  });
+}
+
 function writeEntry(entry) {
   try {
     const log = getErrorLog();

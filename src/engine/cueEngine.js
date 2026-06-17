@@ -110,7 +110,10 @@ export function fireCue(cue, ctx) {
     case "camera_switch": {
       // Per spec, looping sounds stop when a camera switch fires.
       ctx.stopLoopingSounds();
-      ctx.switchCamera(p.facing === "environment" ? "environment" : "user");
+      ctx.switchCamera({
+        type: "facingMode",
+        value: p.facing === "environment" ? "environment" : "user",
+      });
       break;
     }
 

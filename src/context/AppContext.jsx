@@ -29,9 +29,9 @@ export function useApp() {
   return useContext(AppContext);
 }
 
-// Rough mobile detection: camera_switch uses facingMode constraints on mobile
-// and cycles enumerateDevices() video inputs on desktop, per spec.
-const IS_MOBILE = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+// Rough mobile detection: camera uses facingMode constraints on mobile
+// and enumerateDevices() with a dropdown on desktop, per spec.
+export const IS_MOBILE = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 
 export function AppProvider({ children }) {
   // ---- Project data -------------------------------------------------------
@@ -64,8 +64,13 @@ export function AppProvider({ children }) {
   // ---- Camera state --------------------------------------------------------
   const [activeStream, setActiveStream] = useState(null);
   const [facingMode, setFacingMode] = useState("user");
+  // Unified camera selection: { type: 'facingMode' | 'deviceId', value: string }
+  const [cameraSelection, setCameraSelection] = useState({ type: "facingMode", value: "user" });
+  // Desktop-only: list of video input devices for the camera picker dropdown.
+  const [videoDevices, setVideoDevices] = useState([]);
   const streamRef = useRef(null);
-  const deviceIndexRef = useRef(0);
+  const cameraSelectionRef = useRef(cameraSelection);
+  cameraSelectionRef.current = cameraSelection;
 
   // ---- Cue engine state ----------------------------------------------------
   const [firedCueIds, setFiredCueIds] = useState(() => new Set());
@@ -96,8 +101,6 @@ export function AppProvider({ children }) {
   playbackRef.current = playbackState;
   const scriptLenRef = useRef(project.script.length);
   scriptLenRef.current = project.script.length;
-  const facingRef = useRef(facingMode);
-  facingRef.current = facingMode;
   const cueSheetRef = useRef(cueSheet);
   cueSheetRef.current = cueSheet;
   const projectRef = useRef(project);
@@ -228,35 +231,38 @@ export function AppProvider({ children }) {
   }, []);
 
   const startCamera = useCallback(
-    async (facing = facingRef.current, cycleDevice = false) => {
+    async (selectionOverride) => {
+      const selection = selectionOverride ?? cameraSelectionRef.current;
       try {
         if (streamRef.current) {
           streamRef.current.getTracks().forEach((t) => t.stop());
         }
-        let videoConstraints = {
-          facingMode: facing,
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-        };
-        if (!IS_MOBILE && cycleDevice) {
-          const devices = await navigator.mediaDevices.enumerateDevices();
-          const cams = devices.filter((d) => d.kind === "videoinput");
-          if (cams.length > 1) {
-            deviceIndexRef.current = (deviceIndexRef.current + 1) % cams.length;
-            videoConstraints = {
-              deviceId: { exact: cams[deviceIndexRef.current].deviceId },
-              width: { ideal: 1280 },
-              height: { ideal: 720 },
-            };
-          }
-        }
+        const videoConstraints =
+          selection.type === "deviceId"
+            ? { deviceId: { exact: selection.value }, width: { ideal: 1280 }, height: { ideal: 720 } }
+            : { facingMode: selection.value, width: { ideal: 1280 }, height: { ideal: 720 } };
         const stream = await navigator.mediaDevices.getUserMedia({
           video: videoConstraints,
           audio: true,
         });
         streamRef.current = stream;
         setActiveStream(stream);
-        setFacingMode(facing);
+
+        // On desktop, resolve the actual deviceId used by the facingMode
+        // constraint so the dropdown shows the correct selection and future
+        // restarts use the exact same device.
+        let resolvedSelection = selection;
+        if (!IS_MOBILE && selection.type === "facingMode") {
+          const deviceId = stream.getVideoTracks()[0]?.getSettings()?.deviceId;
+          if (deviceId) resolvedSelection = { type: "deviceId", value: deviceId };
+        }
+        setCameraSelection(resolvedSelection);
+        // Mirror only for mobile front-facing camera; desktop cameras are never mirrored.
+        setFacingMode(
+          IS_MOBILE && selection.type === "facingMode" && selection.value === "user"
+            ? "user"
+            : "environment"
+        );
         setPermission("granted");
         localStorage.setItem(PERMISSIONS_KEY, "granted");
         return stream;
@@ -268,10 +274,29 @@ export function AppProvider({ children }) {
     [toast]
   );
 
+  // Enumerate video input devices on desktop. Runs once on mount (labels may
+  // be empty before permission) and again whenever activeStream changes (labels
+  // are populated after the user grants camera access).
+  useEffect(() => {
+    if (IS_MOBILE) return;
+    navigator.mediaDevices
+      .enumerateDevices()
+      .then((devices) => setVideoDevices(devices.filter((d) => d.kind === "videoinput")))
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (IS_MOBILE || !activeStream) return;
+    navigator.mediaDevices
+      .enumerateDevices()
+      .then((devices) => setVideoDevices(devices.filter((d) => d.kind === "videoinput")))
+      .catch(() => {});
+  }, [activeStream]);
+
   const switchCamera = useCallback(
-    (facing) => {
+    (selection) => {
       if (permission === "skipped") return;
-      startCamera(facing, true).catch(() => {});
+      startCamera(selection).catch(() => {});
     },
     [permission, startCamera]
   );
@@ -282,7 +307,7 @@ export function AppProvider({ children }) {
   }, []);
 
   const requestPermissions = useCallback(async () => {
-    await startCamera("user");
+    await startCamera({ type: "facingMode", value: "user" });
   }, [startCamera]);
 
   const resetPermissions = useCallback(() => {
@@ -294,7 +319,8 @@ export function AppProvider({ children }) {
   const startRecording = useCallback(async () => {
     let stream = streamRef.current;
     if (!stream) {
-      stream = await startCamera(facingRef.current);
+      // Restore the previously selected camera rather than defaulting to system default.
+      stream = await startCamera();
     }
     recordedChunksRef.current = [];
     saveOnStop.current = false;
@@ -554,7 +580,7 @@ export function AppProvider({ children }) {
     return () => document.removeEventListener("visibilitychange", onVisibilityChange);
   }, []);
 
-    // Cleanup on unload: stop tracks, sounds, and AudioContext.
+  // Cleanup on unload: stop tracks, sounds, and AudioContext.
   useEffect(() => {
     return () => {
       stopStream();
@@ -590,7 +616,9 @@ export function AppProvider({ children }) {
     // camera
     activeStream,
     facingMode,
+    cameraSelection,
     switchCamera,
+    videoDevices,
     // permissions
     permission,
     requestPermissions,

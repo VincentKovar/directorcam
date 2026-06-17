@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useApp } from "../context/AppContext";
+import { useApp, IS_MOBILE } from "../context/AppContext";
 import { wordIndexAt } from "../engine/teleprompterEngine";
+import { logError } from "../utils/errorLog";
 import CameraPreview from "../components/CameraPreview";
 
 // Screen 1 -- Teleprompter. Black background, scrolling script, minimal
@@ -25,6 +26,10 @@ export default function Teleprompter() {
     setFontSize,
     previewVisible,
     setPreviewVisible,
+    activeStream,
+    cameraSelection,
+    switchCamera,
+    videoDevices,
   } = useApp();
 
   const areaRef = useRef(null);
@@ -36,6 +41,59 @@ export default function Teleprompter() {
   const [countdownPhase, setCountdownPhase] = useState(null); // null | 3 | 2 | 1
   const [showResetDialog, setShowResetDialog] = useState(false);
   const audioCtxRef = useRef(null);
+
+  // ---- Zoom state (mobile only, during recording) ---------------------------
+  const [zoomCaps, setZoomCaps] = useState(null); // null or { min, max, step }
+  const [zoomValue, setZoomValue] = useState(1);
+
+  // Read zoom capability from the active video track whenever recording starts
+  // or the stream changes. Resets to the widest view (min) on every new take.
+  useEffect(() => {
+    if (!IS_MOBILE || !isRecording || !activeStream) {
+      setZoomCaps(null);
+      return;
+    }
+    const track = activeStream.getVideoTracks()[0];
+    if (!track) {
+      setZoomCaps(null);
+      return;
+    }
+    const caps = track.getCapabilities?.();
+    if (!caps?.zoom) {
+      setZoomCaps(null);
+      return;
+    }
+    const { min, max, step } = caps.zoom;
+    setZoomCaps({ min, max, step });
+    setZoomValue(min);
+  }, [isRecording, activeStream]);
+
+  const handleZoomChange = async (e) => {
+    const newZoom = Number(e.target.value);
+    setZoomValue(newZoom);
+    const track = activeStream?.getVideoTracks()[0];
+    if (!track) return;
+    try {
+      await track.applyConstraints({ advanced: [{ zoom: newZoom }] });
+    } catch (err) {
+      logError("Camera zoom applyConstraints failed", err);
+    }
+  };
+
+  // ---- Camera flip (mobile only) -------------------------------------------
+  const handleCameraFlip = () => {
+    const currentFacing =
+      cameraSelection.type === "facingMode" ? cameraSelection.value : "user";
+    switchCamera({ type: "facingMode", value: currentFacing === "user" ? "environment" : "user" });
+  };
+
+  // ---- Desktop camera picker value -----------------------------------------
+  // After the first stream starts, cameraSelection resolves to { type: 'deviceId' }.
+  // Before that, fall back to the first enumerated device so the dropdown is not blank.
+  const desktopPickerValue =
+    cameraSelection.type === "deviceId"
+      ? cameraSelection.value
+      : (videoDevices[0]?.deviceId ?? "");
 
   // ---- Countdown logic ------------------------------------------------------
   const handleStartTake = () => {
@@ -273,8 +331,9 @@ export default function Teleprompter() {
           )}
         </div>
 
-        {/* Camera PiP thumbnail, top-right, toggleable */}
+        {/* Camera PiP thumbnail + camera controls, top-right */}
         <div className="absolute right-2 top-2 z-30 flex flex-col items-end gap-1">
+          {/* Preview visibility toggle */}
           <button
             onClick={() => setPreviewVisible(!previewVisible)}
             aria-label="Toggle camera preview"
@@ -289,8 +348,61 @@ export default function Teleprompter() {
           {previewVisible && permission === "granted" && (
             <CameraPreview className="h-[90px] w-[160px] rounded-lg border border-neutral-700" />
           )}
+
+          {/* Mobile: front/back toggle button */}
+          {IS_MOBILE && permission === "granted" && (
+            <button
+              onClick={handleCameraFlip}
+              aria-label="Flip camera"
+              className="flex h-9 w-9 items-center justify-center rounded-full bg-black/50 text-white/70"
+            >
+              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M1 4v6h6" />
+                <path d="M23 20v-6h-6" />
+                <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" />
+              </svg>
+            </button>
+          )}
+
+          {/* Desktop: camera dropdown (multiple devices) or static label (one device) */}
+          {!IS_MOBILE && permission === "granted" && videoDevices.length > 1 && (
+            <select
+              value={desktopPickerValue}
+              onChange={(e) => switchCamera({ type: "deviceId", value: e.target.value })}
+              aria-label="Camera"
+              className="max-w-[160px] rounded border border-neutral-700 bg-black/70 px-2 py-1 text-xs text-white"
+            >
+              {videoDevices.map((d, i) => (
+                <option key={d.deviceId} value={d.deviceId}>
+                  {d.label || `Camera ${i + 1}`}
+                </option>
+              ))}
+            </select>
+          )}
+          {!IS_MOBILE && permission === "granted" && videoDevices.length === 1 && (
+            <span className="max-w-[160px] truncate rounded bg-black/50 px-2 py-1 text-xs text-white/60">
+              {videoDevices[0].label || "Camera 1"}
+            </span>
+          )}
         </div>
       </div>
+
+      {/* Zoom slider row — mobile only, visible during recording when device supports zoom */}
+      {IS_MOBILE && isRecording && zoomCaps && (
+        <div className="flex shrink-0 items-center gap-3 bg-black/80 px-4 py-1.5">
+          <span className="text-[11px] text-white/50">Zoom</span>
+          <input
+            type="range"
+            min={zoomCaps.min}
+            max={zoomCaps.max}
+            step={zoomCaps.step ?? "any"}
+            value={zoomValue}
+            onChange={handleZoomChange}
+            aria-label="Camera zoom"
+            className="flex-1 accent-amber-500"
+          />
+        </div>
+      )}
 
       {/* Control strip -- 48px, semi-transparent, above the tab bar */}
       <div className="relative z-40 flex h-12 shrink-0 items-center justify-between bg-black/80 px-4">
