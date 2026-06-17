@@ -7,68 +7,107 @@ export const FONT_SIZE_KEY = "directorcam_fontsize";
 export const PERMISSIONS_KEY = "directorcam_permissions";
 export const PREVIEW_VISIBLE_KEY = "directorcam_preview_visible";
 
-// Demo project loaded on first launch (nothing in localStorage), verbatim
-// from the spec, so the user has something to explore immediately.
+// Demo project loaded on first launch (nothing in localStorage).
+// Covers all eight cue types so new users can see every feature in action.
 export const DEMO_PROJECT = {
   project: {
     id: "proj_demo",
-    title: "Demo — Workshop Intro",
+    title: "Demo — Talking-Head Workflow",
     script:
-      "Welcome to the workshop. Today we are covering three things: how to set up your space, how to frame your shot, and how to use DirectorCam to coordinate your recording. Let me show you the setup first. Here is what your recording space should look like. Notice the lighting position and the distance from the camera. Now let us talk about framing. The rule of thirds applies here. Place yourself slightly off-center and leave room for lower-third graphics. Finally, here is how the cue sheet works. Every event you see marked in the production view will fire automatically as you read the script at this pace. You can also trigger any event manually by tapping it in the production view.",
+      "Welcome back. Today we are walking through a full talking-head workflow — framing, lighting, and the cue system that keeps everything on schedule. I am switching to the rear camera so you can see the room setup. Notice the key light angle and the clean background behind the subject. Now back to the front. Pull up slide one — the three-point lighting diagram. Key light at forty-five degrees, fill at half power opposite, back light to separate you from the background. Now I need to reposition the light stand — pausing the recording for a moment while I do that. And we are back. Hear that chime? That is the audio cue that a new segment has started. Here is a reference clip showing the same lighting setup on a professional set — I will let it play and then come back to us. Back to me. Keep your eyes on the lens, not the screen, whenever you want to look directly at camera. Last thing before we close: the channel logo comes up as a corner overlay automatically so you do not have to hold a sign. See you in the next one.",
     wpm: 130,
     createdAt: "2026-06-04T10:00:00Z",
     updatedAt: "2026-06-04T10:00:00Z",
-    slideDeckUrl: "",
+    slideDeckUrl: "https://docs.google.com/presentation/d/YOUR_PRESENTATION_ID/present",
   },
   cueSheet: [
     {
       id: "cue_001",
-      label: "Opening title",
+      label: "Opening lower third",
       type: "title_card",
       trigger: { mode: "auto", scriptOffset: 0 },
       payload: {
-        text: "Workshop Intro",
-        subtext: "Setting up your space",
+        text: "Talking-Head Workflow",
+        subtext: "DirectorCam demo",
         style: "lower_third",
-        duration: 4000,
+        duration: 5000,
       },
-      notes: "Fires immediately at the start",
+      notes: "Fires on the first word. Replace text with your video title and episode number.",
     },
     {
       id: "cue_002",
-      label: "Switch to rear camera",
+      label: "Switch to rear cam — room setup",
       type: "camera_switch",
-      trigger: { mode: "auto", scriptOffset: 198 },
+      trigger: { mode: "auto", scriptOffset: 147 },
       payload: { facing: "environment" },
-      notes: "Show the room setup at this point",
+      notes: "Fires at \"I am switching to the rear camera\". Shows the room from behind.",
     },
     {
       id: "cue_003",
-      label: "Switch back to front",
+      label: "Switch back to front cam",
       type: "camera_switch",
-      trigger: { mode: "auto", scriptOffset: 312 },
+      trigger: { mode: "auto", scriptOffset: 284 },
       payload: { facing: "user" },
-      notes: "",
+      notes: "Fires at \"Now back to the front\".",
     },
     {
       id: "cue_004",
-      label: "Framing reminder",
-      type: "note_flash",
-      trigger: { mode: "auto", scriptOffset: 340 },
-      payload: { text: "Step back — you are too close to the lens", duration: 4000 },
-      notes: "",
+      label: "Lighting diagram — slide 1",
+      type: "static_screen",
+      trigger: { mode: "auto", scriptOffset: 307 },
+      payload: { slideNumber: 1, openIn: "tab" },
+      notes: "Set your Google Slides present URL in Project Settings first. Fires at \"Pull up slide one\".",
     },
     {
       id: "cue_005",
-      label: "Manual: fire applause SFX",
+      label: "Pause to reposition light stand",
+      type: "pause_recording",
+      trigger: { mode: "auto", scriptOffset: 471 },
+      payload: { countdown: 8 },
+      notes: "Auto-resumes after 8 seconds. Increase countdown if you need more time.",
+    },
+    {
+      id: "cue_006",
+      label: "Segment transition chime",
       type: "sound_effect",
-      trigger: { mode: "manual" },
+      trigger: { mode: "auto", scriptOffset: 566 },
       payload: {
-        src: "https://www.soundjay.com/human/applause-01.mp3",
-        volume: 0.6,
+        src: "https://upload.wikimedia.org/wikipedia/commons/6/6a/Bing_sound.ogg",
+        volume: 0.7,
         loop: false,
       },
-      notes: "Tap manually whenever you want to use this",
+      notes: "Public domain chime from Wikimedia Commons. Replace with any direct-link MP3 or OGG URL.",
+    },
+    {
+      id: "cue_007",
+      label: "B-roll: pro set lighting clip",
+      type: "video_link",
+      trigger: { mode: "manual" },
+      payload: {
+        url: "https://www.youtube.com/watch?v=dCBmQg8oa6Y",
+        openIn: "tab",
+      },
+      notes: "Manual trigger — tap in the Production tab when you reach \"Here is a reference clip\". Replace URL with your actual B-roll or reference video.",
+    },
+    {
+      id: "cue_008",
+      label: "Eye-line reminder",
+      type: "note_flash",
+      trigger: { mode: "auto", scriptOffset: 780 },
+      payload: { text: "Eyes on the lens — not the screen", duration: 4000 },
+      notes: "Private note visible only to you. Fires at \"Back to me\".",
+    },
+    {
+      id: "cue_009",
+      label: "Channel logo watermark",
+      type: "image_overlay",
+      trigger: { mode: "auto", scriptOffset: 882 },
+      payload: {
+        src: "https://upload.wikimedia.org/wikipedia/commons/thumb/3/3b/Camera_font_awesome.svg/240px-Camera_font_awesome.svg.png",
+        position: "corner",
+        duration: 8000,
+      },
+      notes: "Replace src with a direct link to your channel logo PNG. Fires at \"Last thing before we close\".",
     },
   ],
 };
