@@ -46,9 +46,11 @@ export function AppProvider({ children }) {
   const [isRecording, setIsRecording] = useState(false);
   const mediaRecorderRef = useRef(null);
   const recordedChunksRef = useRef([]);
-  // Set true before calling recorder.stop() when discarding -- prevents
-  // ondataavailable and onstop from saving or downloading the file.
-  const isDiscarding = useRef(false);
+  // Armed to true only by stopRecording(false) immediately before recorder.stop().
+  // onstop downloads only when this is true, so any unexpected stop (e.g. the
+  // browser halting the recorder when stream tracks are stopped during a camera
+  // switch) never triggers an accidental download.
+  const saveOnStop = useRef(false);
 
   // ---- Shared AudioContext -------------------------------------------------
   // Created on the "Start Take" user gesture tap, reused for countdown beeps
@@ -295,21 +297,22 @@ export function AppProvider({ children }) {
       stream = await startCamera(facingRef.current);
     }
     recordedChunksRef.current = [];
-    isDiscarding.current = false;
+    saveOnStop.current = false;
     const mime = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"].find(
       (m) => window.MediaRecorder && MediaRecorder.isTypeSupported(m)
     );
     const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
     recorder.ondataavailable = (e) => {
-      if (isDiscarding.current) return;
       if (e.data && e.data.size > 0) recordedChunksRef.current.push(e.data);
     };
     recorder.onstop = () => {
-      if (isDiscarding.current) {
-        isDiscarding.current = false;
+      if (!saveOnStop.current) {
+        // Unexpected stop (e.g. stream tracks ended during camera switch).
+        // Discard silently -- never download without an explicit user action.
         recordedChunksRef.current = [];
         return;
       }
+      saveOnStop.current = false;
       const blob = new Blob(recordedChunksRef.current, { type: "video/webm" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -325,9 +328,11 @@ export function AppProvider({ children }) {
     toast("Recording started", "success");
   }, [startCamera, toast]);
 
-  // discard=true skips the file download. discard=false (default) saves.
+  // discard=true throws away the recording. discard=false (default) saves it.
+  // saveOnStop is armed here -- not in onstop -- so only this explicit call
+  // can trigger a download, never an unexpected recorder stop event.
   const stopRecording = useCallback((discard = false) => {
-    isDiscarding.current = discard;
+    saveOnStop.current = !discard; // arm download only for intentional saves
     const recorder = mediaRecorderRef.current;
     if (recorder && recorder.state !== "inactive") {
       recorder.stop();
@@ -529,7 +534,27 @@ export function AppProvider({ children }) {
     toFire.forEach((cue) => fireCue(cue));
   }, [scrollPosition, playbackState, cueSheet, firedCueIds, fireCue]);
 
-  // Cleanup on unload: stop tracks, sounds, and AudioContext.
+  // Sync isRecording with the actual MediaRecorder state whenever the page
+  // becomes visible again. Guards against two scenarios:
+  //   1. The browser paused/stopped the recorder while the tab was backgrounded.
+  //   2. The in-app tab bar switches away and back, which unmounts Teleprompter
+  //      (losing its local takeStarted state) while recording continues here.
+  // In both cases, isRecording is the authoritative source of truth for the UI.
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "visible") return;
+      const recorderState = mediaRecorderRef.current?.state;
+      // Recorder was killed while backgrounded -- correct the React flag.
+      if (isRecordingRef.current && (!recorderState || recorderState === "inactive")) {
+        mediaRecorderRef.current = null;
+        setIsRecording(false);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, []);
+
+    // Cleanup on unload: stop tracks, sounds, and AudioContext.
   useEffect(() => {
     return () => {
       stopStream();

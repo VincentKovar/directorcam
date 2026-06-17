@@ -34,7 +34,6 @@ export default function Teleprompter() {
 
   // ---- Take state -----------------------------------------------------------
   const [countdownPhase, setCountdownPhase] = useState(null); // null | 3 | 2 | 1
-  const [takeStarted, setTakeStarted] = useState(false);
   const [showResetDialog, setShowResetDialog] = useState(false);
   const audioCtxRef = useRef(null);
 
@@ -74,7 +73,6 @@ export default function Teleprompter() {
     const timer = setTimeout(() => {
       if (countdownPhase === 1) {
         setCountdownPhase(null);
-        setTakeStarted(true);
         startRecording().catch(() => {});
         togglePlay(); // stopped -> playing
       } else {
@@ -89,7 +87,6 @@ export default function Teleprompter() {
   const executeReset = (discard) => {
     stopRecording(discard);
     stop(); // position -> 0, re-arms all cues, preserves camera
-    setTakeStarted(false);
     setShowResetDialog(false);
   };
 
@@ -315,7 +312,7 @@ export default function Teleprompter() {
         </div>
 
         {/* Primary action button */}
-        {takeStarted ? (
+        {isRecording ? (
           <button
             onClick={() => setShowResetDialog(true)}
             className="min-h-[44px] rounded-lg border border-neutral-600 px-5 text-sm font-semibold text-white"
