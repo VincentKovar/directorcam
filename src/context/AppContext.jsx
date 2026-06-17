@@ -570,8 +570,16 @@ export function AppProvider({ children }) {
     const onVisibilityChange = () => {
       if (document.visibilityState !== "visible") return;
       const recorderState = mediaRecorderRef.current?.state;
-      // Recorder was killed while backgrounded -- correct the React flag.
-      if (isRecordingRef.current && (!recorderState || recorderState === "inactive")) {
+      // Recorder was genuinely killed while backgrounded -- correct the React flag.
+      // The recordedChunksRef guard prevents a false reset when returning from
+      // external navigation (e.g. a slide deck opening in the same tab): in that
+      // case the MediaRecorder may report inactive even though recording was never
+      // interrupted, and no chunks will have been collected yet.
+      if (
+        isRecordingRef.current &&
+        (!recorderState || recorderState === "inactive") &&
+        recordedChunksRef.current.length > 0
+      ) {
         mediaRecorderRef.current = null;
         setIsRecording(false);
       }
