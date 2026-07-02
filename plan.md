@@ -11,7 +11,7 @@ multi-hour autonomous work with self-correction, which matches the
 cross-cutting, higher-risk items below. Front-load those onto Fable 5 now.
 Everything else runs fine on Opus, now or after the window closes.
 
-- **Fable 5, priority order:** 3a.0, 3a.0b, 3a.2, 3a.3, 3a.4
+- **Fable 5, priority order:** 3a.0, 3a.0b, 3a.0c, 3a.2, 3a.3, 3a.4
 - **Opus, any time:** 3a.1, 3a.5, 3a.6, 3a.7, and all of Phase 3b onward
 
 ## Current phase: Phase 3a — Recording Workflow & Layout Overhaul
@@ -21,14 +21,16 @@ they're all filed under Phase 3a, per the "keep phases separate" rule.
 Sequenced by dependency, not by request order.
 
 ### 3a.0 — Codebase audit (do this first, Fable 5)
-- [ ] Read the full codebase against `PRD.md` and this plan; flag any
+- [x] Read the full codebase against `PRD.md` and this plan; flag any
       structural risk areas before new feature work starts, especially
       around recording lifecycle, permission state, and cue timing
-- [ ] Confirm Bug C's proposed fix (`takeStartedRef`) is actually the right
+- [x] Confirm Bug C's proposed fix (`takeStartedRef`) is actually the right
       shape given the new pre-flight and B-roll work about to land on the
-      same code paths
-- [ ] Report findings before making changes — this is a read/diagnose
-      session, not a fix session
+      same code paths — it is not; see the revised Bug C entry in `BUGS.md`
+      and the new 3a.0c step below
+- [x] Report findings before making changes — this is a read/diagnose
+      session, not a fix session (done 2026-07-01; found and confirmed
+      Bug E, camera-switch recording loss, logged in `BUGS.md`)
 - Rationale: the original build was done in a very small number of prompts
   on a long-horizon autonomous model. That produces code that looks
   finished but can have shortcuts underneath. Cheaper to find them now than
@@ -39,11 +41,42 @@ Sequenced by dependency, not by request order.
       start and stop cleanly, does a cue fire at its scripted position, does
       mute actually silence the mic track, does the recording survive a
       simulated tab-background event
+- [ ] Include the camera-switch-mid-take scenario (Bug E in `BUGS.md`) as
+      the first check — it is confirmed data loss today and is the pass/fail
+      signal for 3a.0c
 - [ ] These become the pass/fail signal for every sub-task below — use them
       before marking a sub-task done, not just a visual check
 - Rationale: there's no test suite right now, which means "done" currently
   means "looked right by eye." This closes that gap cheaply while Fable-tier
   capability is available for it.
+
+### 3a.0c — Take state machine + recording-loss fix (Fable 5)
+Fixes Bug C and Bug E together (see `BUGS.md` for both). Must land before
+3a.2 — pre-flight builds directly on this, and the 3a.0b smoke tests should
+encode its behaviour.
+- [ ] Replace the scattered take state (`isRecording` in context,
+      `countdownPhase` local to `Teleprompter.jsx`, `playbackState`,
+      `pauseInfo`) with one explicit take state machine in `AppContext.jsx`:
+      roughly `idle → preflight → countdown → recording → paused(manual|cue)
+      → interrupted → idle`. Enter the take-active state on successful
+      `recorder.start()`, not on the Start Take tap.
+- [ ] Make the `onstop` discard path take-aware: an unexpected recorder stop
+      during an active take preserves the collected chunks and moves the
+      take to `interrupted` instead of silently clearing them (Bug E, and
+      the data-loss half of Bug C)
+- [ ] Rework the `visibilitychange` handler from a silent guard into a
+      reconcile step: on return-to-visible with a take active and the
+      recorder inactive, surface "take interrupted" and offer save/restart
+      (Bug C)
+- [ ] Surface the interrupted state in the UI — no more REC indicator over a
+      dead recorder, no "Recording saved" toast when nothing was saved
+- [ ] Ask Vincent to decide the intended mid-take camera-switch behaviour
+      (keep recording the record-start camera per `PRD.md`'s non-goals
+      wording, vs. stop-and-segment) before implementing that part of Bug E
+- Model/effort: Fable 5 / extended thinking — this is `AppContext.jsx` +
+  recording lifecycle, the highest-regression area in the app
+- Meta-prompt this one through Gemini Flash first (per `CLAUDE.md`) — it is
+  architectural, not a single-file fix
 
 ### 3a.1 — Cue type cleanup (Opus)
 - [ ] Remove the "Static screen" cue type from `CUE_TYPES` / `CUE_TYPE_META`
